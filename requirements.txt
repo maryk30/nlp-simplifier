@@ -1,0 +1,11 @@
+streamlit
+spacy>=3.7
+textstat
+wordfreq
+yake
+numpy
+pandas
+openpyxl
+torch>=2.2
+transformers>=5.0
+sentence-transformers>=6.0
