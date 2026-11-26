@@ -1,15 +1,12 @@
 import difflib
 import html
+import re
 from pathlib import Path
 
 import streamlit as st
-import textstat
 
-from bert_replace import replace_with_bert
-from difficult_words import identify_difficult_words, sort_words
+from evaluate import TARGET_GRADE, TARGET_WORDS_PER_SENTENCE, run
 from main import load_replacements
-from preprocess import nlp
-from simplify import simplify
 
 REPLACEMENTS = Path("data/replacement_words.csv")
 MIN_WORDS = 15
@@ -35,6 +32,21 @@ def validate(text):
     return None
 
 
+def short_note(note):
+    change = re.search(r"(-?\d+(?:\.\d+)?) → (-?\d+(?:\.\d+)?)", note)
+    if change:
+        return f"{change.group(1)} → {change.group(2)}"
+    kept = re.search(r"(\d+) of (\d+)", note)
+    if kept:
+        return f"{kept.group(1)} of {kept.group(2)} kept"
+    value = re.search(r"\d\.\d+", note)
+    if value:
+        return value.group(0)
+    if note.startswith("No new"):
+        return "0 new"
+    return f"{len(note.split(':', 1)[-1].split(','))} new"
+
+
 def highlight(before, after):
     old, new = before.split(), after.split()
     parts = []
@@ -47,37 +59,6 @@ def highlight(before, after):
         else:
             parts.append(f'<mark style="background:#EBD3CB;padding:0 2px">{chunk}</mark>')
     return " ".join(parts)
-
-
-def stats(text, difficult_count):
-    sentences = max(1, textstat.sentence_count(text))
-    return {
-        "Reading ease": round(textstat.flesch_reading_ease(text), 1),
-        "Grade level": round(textstat.flesch_kincaid_grade(text), 1),
-        "Words per sentence": round(len(text.split()) / sentences, 1),
-        "Difficult words": difficult_count,
-    }
-
-
-def run_pipeline(original):
-    simplified = simplify(original, get_replacements())
-    replace_words, flag_words = identify_difficult_words(simplified)
-    replace_words, flag_words = sort_words(replace_words), sort_words(flag_words)
-    final, report, no_match = replace_with_bert(simplified, set(replace_words))
-
-    before_replace, before_flag = identify_difficult_words(original)
-    after_replace, after_flag = identify_difficult_words(final)
-
-    return {
-        "simplified": simplified,
-        "final": final,
-        "replace_words": replace_words,
-        "flag_words": flag_words,
-        "report": report,
-        "no_match": no_match,
-        "before": stats(original, len(set(before_replace + before_flag))),
-        "after": stats(final, len(set(after_replace + after_flag))),
-    }
 
 
 st.set_page_config(page_title="Educational Text Simplifier", layout="wide")
@@ -93,15 +74,14 @@ if st.button("Simplify", type="primary"):
     else:
         with st.spinner("Simplifying… the first run downloads the BERT model, which takes a minute."):
             try:
-                st.session_state["result"] = run_pipeline(text.strip())
-                st.session_state["original"] = " ".join(text.split())
+                st.session_state["result"] = run(text.strip(), get_replacements())
             except Exception as exc:
                 st.error(f"Something went wrong while simplifying: {exc}")
                 st.session_state.pop("result", None)
 
 result = st.session_state.get("result")
 if result:
-    original = st.session_state["original"]
+    original = result["original"]
 
     left, right = st.columns(2)
     with left:
@@ -113,24 +93,24 @@ if result:
         st.caption("Highlighted: changed words and new sentence breaks.")
 
     st.subheader("Difficult words")
-    replaced = {}
-    for old, new, sentence in result["report"]:
-        replaced.setdefault(old.lower(), new)
-        replaced.setdefault(nlp(old)[0].lemma_.lower(), new)
-    rows = [{"Word": w, "Simpler alternative": replaced.get(w, "—"), "Action": "Replaced" if w in replaced else "Kept (no good alternative)"}
-            for w in result["replace_words"]]
-    rows += [{"Word": w, "Simpler alternative": "—", "Action": "Kept: key term or name, explain"}
-             for w in result["flag_words"]]
+    rows = [{"Word": r["old"], "Simpler alternative": r["new"], "Word similarity": r["word_similarity"],
+             "Sentence similarity": r["similarity"], "Action": "Replaced"} for r in result["report"]]
+    rows += [{"Word": k["word"], "Simpler alternative": "—", "Word similarity": None, "Sentence similarity": None,
+              "Action": "Kept: no candidate kept the meaning"} for k in result["kept"]]
+    rows += [{"Word": w, "Simpler alternative": "—", "Word similarity": None, "Sentence similarity": None,
+              "Action": "Kept: key term or name, explain"} for w in result["flag_words"]]
     if rows:
         st.dataframe(rows, width="stretch", hide_index=True)
     else:
         st.write("No difficult words found.")
 
-    st.subheader("Basic readability checks")
-    st.caption("Before vs after. The full six-part evaluation is still to be added.")
-    columns = st.columns(4)
-    for column, (name, after_value) in zip(columns, result["after"].items()):
-        before_value = result["before"][name]
-        delta = round(after_value - before_value, 1)
-        inverse = name != "Reading ease"
-        column.metric(name, after_value, delta, delta_color="inverse" if inverse else "normal")
+    evaluation = result["evaluation"]
+    st.subheader(f"Evaluation · overall {evaluation['overall']}/100")
+    st.caption(f"Targets: grade level {TARGET_GRADE:g} or lower (about age 12), "
+               f"about {TARGET_WORDS_PER_SENTENCE:g} words per sentence.")
+    names = list(evaluation["scores"])
+    for row_names in (names[:3], names[3:]):
+        for column, name in zip(st.columns(3), row_names):
+            score, note = evaluation["scores"][name]
+            column.metric(name, f"{score}/100")
+            column.caption(short_note(note))
