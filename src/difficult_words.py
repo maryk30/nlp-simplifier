@@ -75,7 +75,7 @@ def identify_difficult_words(text):
     replace_words = []
     flag_words = []
 
-    paragraph, sentences = preprocess_text(text)
+    paragraph, _sentences = preprocess_text(text)
     keyword_words = identify_keywords(text)
 
     for token in paragraph:

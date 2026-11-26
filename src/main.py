@@ -57,7 +57,7 @@ def main():
     if not BACKUP.exists():
         shutil.copy(DATA, BACKUP)
 
-    original = BACKUP.read_text(encoding="utf-8")
+    original = DATA.read_text(encoding="utf-8")
     replacements = load_replacements(REPLACEMENTS)
     simplified = simplify(original, replacements)
     DATA.write_text(simplified, encoding="utf-8")
